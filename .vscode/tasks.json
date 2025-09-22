@@ -25,6 +25,12 @@
       "problemMatcher": []
     },
     {
+      "label": "CMake: configure && build",
+      "dependsOn": ["CMake: configure", "CMake: build"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
       "label": "CMake: clean",
       "type": "shell",
       "command": "cmake",
