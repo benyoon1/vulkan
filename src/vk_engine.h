@@ -5,6 +5,17 @@
 
 #include <vk_types.h>
 
+struct FrameData
+{
+    VkSemaphore _swapchainSemaphore; // signaled by acquire; per-frame is fine
+    VkFence _renderFence;
+
+    VkCommandPool _commandPool;
+    VkCommandBuffer _mainCommandBuffer;
+};
+
+constexpr unsigned int FRAME_OVERLAP = 2;
+
 class VulkanEngine
 {
 public:
@@ -13,13 +24,24 @@ public:
     bool stop_rendering{false};
     VkExtent2D _windowExtent{1700, 900};
 
+    struct SDL_Window* _window{nullptr};
+
+    //> inst_init
     VkInstance _instance;                      // Vulkan library handle
     VkDebugUtilsMessengerEXT _debug_messenger; // Vulkan debug output handle
     VkPhysicalDevice _chosenGPU;               // GPU chosen as the default device
     VkDevice _device;                          // Vulkan device for commands
     VkSurfaceKHR _surface;                     // Vulkan window surface
+                                               //< inst_init
 
-    struct SDL_Window* _window{nullptr};
+    //> queues
+    FrameData _frames[FRAME_OVERLAP];
+
+    FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; };
+
+    VkQueue _graphicsQueue;
+    uint32_t _graphicsQueueFamily;
+    //< queues
 
     //> swap_init
     VkSwapchainKHR _swapchain;
@@ -28,6 +50,8 @@ public:
     std::vector<VkImage> _swapchainImages;
     std::vector<VkImageView> _swapchainImageViews;
     VkExtent2D _swapchainExtent;
+    // One render-finished semaphore per swapchain image to avoid reuse while present is in-flight
+    std::vector<VkSemaphore> _imageRenderSemaphores;
     //< swap_init
 
     // initializes everything in the engine
