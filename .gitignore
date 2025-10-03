@@ -4,3 +4,4 @@
 /.cache
 /third_party
 log.txt
+*.spv

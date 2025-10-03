@@ -22,6 +22,14 @@ add_executable (engine
 set_property(TARGET engine PROPERTY CXX_STANDARD 20)
 target_compile_definitions(engine PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE)
 target_include_directories(engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(engine SYSTEM PRIVATE
+  "${CMAKE_SOURCE_DIR}/third_party/vma"
+  "${CMAKE_SOURCE_DIR}/third_party/fastgltf"
+  "${CMAKE_SOURCE_DIR}/third_party/imgui"
+  "${CMAKE_SOURCE_DIR}/third_party/glm"
+  "${CMAKE_SOURCE_DIR}/third_party/SDL"
+)
+target_compile_definitions(engine PRIVATE SHADERS_DIR="${CMAKE_SOURCE_DIR}/shaders")
 
 target_link_libraries(engine PUBLIC vma glm Vulkan::Vulkan fmt::fmt stb_image SDL2::SDL2 vkbootstrap imgui fastgltf::fastgltf)
 
