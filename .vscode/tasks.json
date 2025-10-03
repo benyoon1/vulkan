@@ -25,8 +25,21 @@
       "problemMatcher": []
     },
     {
-      "label": "CMake: configure && build",
-      "dependsOn": ["CMake: configure", "CMake: build"],
+      // launch program engine
+      "label": "C++ Launch",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/engine",
+      "args": [],
+      "problemMatcher": [],
+      "dependsOn": "CMake: build",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "CMake: configure && build && run",
+      "dependsOn": ["CMake: configure", "CMake: build", "C++ Launch"],
       "dependsOrder": "sequence",
       "problemMatcher": []
     },

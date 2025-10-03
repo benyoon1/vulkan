@@ -8,6 +8,7 @@
 #include <vk_types.h>
 
 #include "VkBootstrap.h"
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <fstream>
@@ -27,7 +28,7 @@
 constexpr bool bUseValidationLayers = true;
 
 // chapter stage for refactors/changes
-#define CHAPTER_STAGE 0
+#define CHAPTER_STAGE 3
 
 // we want to immediately abort when there is an error. In normal engines this
 // would give an error message to the user, or perform a dump of state.
@@ -334,17 +335,26 @@ void VulkanEngine::run()
 
         if (ImGui::Begin("background"))
         {
+            if (!backgroundEffects.empty())
+            {
+                int maxIndex = static_cast<int>(backgroundEffects.size()) - 1;
+                currentBackgroundEffect = std::clamp(currentBackgroundEffect, 0, maxIndex);
 
-            ComputeEffect& selected = backgroundEffects[currentBackgroundEffect];
+                ComputeEffect& selected = backgroundEffects[currentBackgroundEffect];
 
-            ImGui::Text("Selected effect: ", selected.name);
+                ImGui::Text("Selected effect: %s", selected.name);
 
-            ImGui::SliderInt("Effect Index", &currentBackgroundEffect, 0, backgroundEffects.size() - 1);
+                ImGui::SliderInt("Effect Index", &currentBackgroundEffect, 0, maxIndex);
 
-            ImGui::InputFloat4("data1", (float*)&selected.data.data1);
-            ImGui::InputFloat4("data2", (float*)&selected.data.data2);
-            ImGui::InputFloat4("data3", (float*)&selected.data.data3);
-            ImGui::InputFloat4("data4", (float*)&selected.data.data4);
+                ImGui::InputFloat4("data1", (float*)&selected.data.data1);
+                ImGui::InputFloat4("data2", (float*)&selected.data.data2);
+                ImGui::InputFloat4("data3", (float*)&selected.data.data3);
+                ImGui::InputFloat4("data4", (float*)&selected.data.data4);
+            }
+            else
+            {
+                ImGui::TextUnformatted("No compute effects available.");
+            }
 
             ImGui::End();
         }
@@ -777,9 +787,11 @@ void VulkanEngine::init_pipelines()
 #if CHAPTER_STAGE < 2
     //> comp_pipeline_2
     VkShaderModule computeDrawShader;
-    if (!vkutil::load_shader_module("../shaders/gradient.comp.spv", _device, &computeDrawShader))
+    const char* gradientShaderPath = SHADERS_DIR "/gradient.comp.spv";
+    if (!vkutil::load_shader_module(gradientShaderPath, _device, &computeDrawShader))
     {
-        fmt::print("Error when building the compute shader \n");
+        fmt::print("Failed to load compute shader: {}\n", gradientShaderPath);
+        abort();
     }
 
     VkPipelineShaderStageCreateInfo stageinfo{};
@@ -812,9 +824,11 @@ void VulkanEngine::init_pipelines()
 
 #elif CHAPTER_STAGE == 2
     VkShaderModule computeDrawShader;
-    if (!vkutil::load_shader_module("../shaders/gradient_color.comp.spv", _device, &computeDrawShader))
+    const char* gradientColorShaderPath = SHADERS_DIR "/gradient_color.comp.spv";
+    if (!vkutil::load_shader_module(gradientColorShaderPath, _device, &computeDrawShader))
     {
-        fmt::print("Error when building the compute shader \n");
+        fmt::print("Failed to load compute shader: {}\n", gradientColorShaderPath);
+        abort();
     }
 
     VkPipelineShaderStageCreateInfo stageinfo{};
@@ -843,15 +857,19 @@ void VulkanEngine::init_pipelines()
 #else
     //> comp_pipeline_multi
     VkShaderModule gradientShader;
-    if (!vkutil::load_shader_module("../shaders/gradient_color.comp.spv", _device, &gradientShader))
+    const char* gradientColorShaderPath = SHADERS_DIR "/gradient_color.comp.spv";
+    if (!vkutil::load_shader_module(gradientColorShaderPath, _device, &gradientShader))
     {
-        fmt::print("Error when building the compute shader \n");
+        fmt::print("Failed to load compute shader: {}\n", gradientColorShaderPath);
+        abort();
     }
 
     VkShaderModule skyShader;
-    if (!vkutil::load_shader_module("../shaders/sky.comp.spv", _device, &skyShader))
+    const char* skyShaderPath = SHADERS_DIR "/sky.comp.spv";
+    if (!vkutil::load_shader_module(skyShaderPath, _device, &skyShader))
     {
-        fmt::print("Error when building the compute shader \n");
+        fmt::print("Failed to load compute shader: {}\n", skyShaderPath);
+        abort();
     }
 
     VkPipelineShaderStageCreateInfo stageinfo{};
