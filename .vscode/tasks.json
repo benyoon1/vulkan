@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "CMake: configure",
+      "label": "CMake: configure (Debug)",
       "type": "shell",
       "command": "cmake",
       "args": [
@@ -18,28 +18,15 @@
       "problemMatcher": []
     },
     {
-      "label": "CMake: build",
+      "label": "CMake: build (Debug)",
       "type": "shell",
       "command": "cmake",
       "args": ["--build", "bin", "--parallel"],
       "problemMatcher": []
     },
     {
-      // launch program engine
-      "label": "C++ Launch",
-      "type": "shell",
-      "command": "${workspaceFolder}/bin/engine",
-      "args": [],
-      "problemMatcher": [],
-      "dependsOn": "CMake: build",
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      }
-    },
-    {
-      "label": "CMake: configure && build && run",
-      "dependsOn": ["CMake: configure", "CMake: build", "C++ Launch"],
+      "label": "CMake: configure && build (Debug)",
+      "dependsOn": ["CMake: configure (Debug)", "CMake: build (Debug)"],
       "dependsOrder": "sequence",
       "problemMatcher": []
     },
@@ -48,6 +35,35 @@
       "type": "shell",
       "command": "cmake",
       "args": ["--build", "bin", "--target", "clean"],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: configure (Release)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "bin-release",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        "-G",
+        "Ninja"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: build (Release)",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "bin-release", "--parallel"],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: configure && build (Release)",
+      "dependsOn": ["CMake: configure (Release)", "CMake: build (Release)"],
+      "dependsOrder": "sequence",
       "problemMatcher": []
     }
   ]

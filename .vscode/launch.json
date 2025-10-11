@@ -12,10 +12,22 @@
       "args": [],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
-      "environment": [],
+      "environment": [
+        {
+          "name": "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS",
+          "value": "1"
+        }
+      ],
       "externalConsole": false,
       "MIMode": "lldb",
-      "preLaunchTask": "CMake: build"
+      "preLaunchTask": "CMake: build (Debug)",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
     }
   ]
 }

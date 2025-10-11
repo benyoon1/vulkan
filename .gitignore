@@ -1,7 +1,8 @@
 /build
 /bin
-/assets/brickadia
+/assets
 /.cache
 /third_party
 log.txt
 *.spv
+.DS_Store
