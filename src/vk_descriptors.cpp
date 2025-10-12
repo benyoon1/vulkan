@@ -140,9 +140,11 @@ void DescriptorWriter::update_set(VkDevice device, VkDescriptorSet set)
 }
 //< writer_end
 //> growpool_2
-void DescriptorAllocatorGrowable::init(VkDevice device, uint32_t maxSets, std::span<PoolSizeRatio> poolRatios)
+void DescriptorAllocatorGrowable::init(VkDevice device, uint32_t maxSets, std::span<PoolSizeRatio> poolRatios,
+                                       VkDescriptorPoolCreateFlags inPoolFlags)
 {
     ratios.clear();
+    poolFlags = inPoolFlags;
 
     for (auto r : poolRatios)
     {
@@ -221,7 +223,7 @@ VkDescriptorPool DescriptorAllocatorGrowable::create_pool(VkDevice device, uint3
 
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.flags = 0;
+    pool_info.flags = poolFlags;
     pool_info.maxSets = setCount;
     pool_info.poolSizeCount = (uint32_t)poolSizes.size();
     pool_info.pPoolSizes = poolSizes.data();

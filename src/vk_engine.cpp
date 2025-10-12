@@ -1078,6 +1078,8 @@ void VulkanEngine::init_vulkan() {
   };
   features12.bufferDeviceAddress = VK_TRUE;
   features12.descriptorIndexing = VK_TRUE;
+  features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+  features12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
   features12.descriptorBindingPartiallyBound = VK_TRUE;
   features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
   features12.runtimeDescriptorArray = VK_TRUE;
@@ -1438,36 +1440,59 @@ void VulkanEngine::init_descriptors() {
 
     std::array<VkDescriptorBindingFlags, 2> flagArray{
         0, VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-               VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
+               VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+               VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
 
     VkPhysicalDeviceProperties props{};
     vkGetPhysicalDeviceProperties(_chosenGPU, &props);
 
-    uint32_t maxSamplers = std::min(props.limits.maxPerStageDescriptorSamplers,
-                                    props.limits.maxDescriptorSetSampledImages);
+    VkPhysicalDeviceDescriptorIndexingProperties indexingProps{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
+    VkPhysicalDeviceProperties2 props2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &indexingProps};
+    vkGetPhysicalDeviceProperties2(_chosenGPU, &props2);
 
-    // fmt::println("max samplers supported: {}", maxSamplers);
-    // fmt::println("max samplers per stage supported: {}",
-    //              props.limits.maxPerStageDescriptorSamplers);
-    // fmt::println("max combined image samplers supported: {}",
-    //              props.limits.maxDescriptorSetSampledImages);
+    uint32_t descriptorLimit = std::numeric_limits<uint32_t>::max();
+    auto clampLimit = [&](uint32_t value) {
+      if (value > 0) {
+        descriptorLimit = std::min(descriptorLimit, value);
+      }
+    };
 
-    // TODO: currently on m1 pro, maxPerStageDescriptorSamplers is 16, but
-    // it should be more this MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1 env var.
-    // investigate why maxPerStageDescriptorSamplers is still low with that env
-    // var set to true.
-//   builder.bindings[1].descriptorCount = std::max(16u, maxSamplers);
-//   _maxSampledImageDescriptors = builder.bindings[1].descriptorCount;
-//   texCache.set_max(_maxSampledImageDescriptors);
+    const bool hasUpdateAfterBindLimits =
+        indexingProps.maxDescriptorSetUpdateAfterBindSampledImages > 0 ||
+        indexingProps.maxDescriptorSetUpdateAfterBindSamplers > 0 ||
+        indexingProps.maxPerStageDescriptorUpdateAfterBindSamplers > 0;
 
-    builder.bindings[1].descriptorCount = 1024;
+    if (hasUpdateAfterBindLimits) {
+      clampLimit(indexingProps.maxPerStageDescriptorUpdateAfterBindSamplers);
+      clampLimit(indexingProps.maxDescriptorSetUpdateAfterBindSamplers);
+      clampLimit(indexingProps.maxDescriptorSetUpdateAfterBindSampledImages);
+    } else {
+      clampLimit(props.limits.maxPerStageDescriptorSamplers);
+      clampLimit(props.limits.maxPerStageDescriptorSampledImages);
+      clampLimit(props.limits.maxDescriptorSetSamplers);
+      clampLimit(props.limits.maxDescriptorSetSampledImages);
+    }
+
+    if (descriptorLimit == std::numeric_limits<uint32_t>::max()) {
+      descriptorLimit = props.limits.maxPerStageDescriptorSamplers;
+    }
+
+    descriptorLimit = std::max(1u, descriptorLimit);
+
+    builder.bindings[1].descriptorCount = descriptorLimit;
+    _maxSampledImageDescriptors = descriptorLimit;
+    texCache.set_max(_maxSampledImageDescriptors);
 
     bindFlags.bindingCount = 2;
     bindFlags.pBindingFlags = flagArray.data();
 
     _gpuSceneDataDescriptorLayout = builder.build(
         _device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        &bindFlags);
+        &bindFlags,
+        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
   }
 
   _mainDeletionQueue.push_function([&]() {
@@ -1494,8 +1519,10 @@ void VulkanEngine::init_descriptors() {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
     };
 
-    _frames[i]._frameDescriptors = DescriptorAllocatorGrowable{};
-    _frames[i]._frameDescriptors.init(_device, 1000, frame_sizes);
+  _frames[i]._frameDescriptors = DescriptorAllocatorGrowable{};
+  _frames[i]._frameDescriptors.init(
+    _device, 1000, frame_sizes,
+    VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT);
     _mainDeletionQueue.push_function(
         [&, i]() { _frames[i]._frameDescriptors.destroy_pools(_device); });
   }
