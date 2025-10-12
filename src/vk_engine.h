@@ -7,6 +7,7 @@
 
 #include <deque>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -155,6 +156,18 @@ struct TextureCache
 
     std::vector<VkDescriptorImageInfo> Cache;
     std::unordered_map<std::string, TextureID> NameMap;
+    uint32_t maxDescriptors = std::numeric_limits<uint32_t>::max();
+    bool limitWarningEmitted = false;
+    TextureID fallbackTexture{0};
+
+    void set_max(uint32_t max)
+    {
+        maxDescriptors = max;
+        limitWarningEmitted = false;
+    }
+
+    void set_fallback(TextureID id) { fallbackTexture = id; }
+
     TextureID AddTexture(const VkImageView& image, VkSampler sampler);
 };
 
@@ -226,6 +239,7 @@ public:
     VkSampler _defaultSamplerNearest;
 
     TextureCache texCache;
+    uint32_t _maxSampledImageDescriptors{0};
 
     GPUMeshBuffers rectangle;
     DrawContext drawCommands;

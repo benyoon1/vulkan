@@ -51,6 +51,44 @@ static std::string shader_path(const char *filename) {
   return (fs::path("../../shaders") / filename).string();
 }
 
+static std::string asset_path(std::string_view relativePath) {
+  namespace fs = std::filesystem;
+  fs::path requested(relativePath);
+
+  if (requested.is_absolute()) {
+    return requested.string();
+  }
+
+  auto begins_with_assets = [&]() {
+    auto it = requested.begin();
+    return it != requested.end() && *it == fs::path("assets");
+  }();
+
+  std::vector<fs::path> candidates;
+  candidates.reserve(4);
+
+  if (begins_with_assets) {
+    candidates.emplace_back(requested);
+    candidates.emplace_back(fs::path("..") / requested);
+  } else {
+    candidates.emplace_back(fs::path("assets") / requested);
+    candidates.emplace_back(fs::path("../assets") / requested);
+  }
+
+  // Compatibility fallbacks: try without any prefix in current and parent dirs
+  candidates.emplace_back(requested);
+  candidates.emplace_back(fs::path("..") / requested);
+
+  for (const auto &candidate : candidates) {
+    if (!candidate.empty() && fs::exists(candidate)) {
+      return candidate.string();
+    }
+  }
+
+  // If nothing exists, default to the first candidate to preserve path structure
+  return candidates.front().string();
+}
+
 void VulkanEngine::init() {
   // only one engine initialization is allowed with the application.
   assert(loadedEngine == nullptr);
@@ -167,6 +205,10 @@ void VulkanEngine::init_default_data() {
   sampl.magFilter = VK_FILTER_LINEAR;
   sampl.minFilter = VK_FILTER_LINEAR;
   vkCreateSampler(_device, &sampl, nullptr, &_defaultSamplerLinear);
+
+  TextureID defaultTextureId =
+      texCache.AddTexture(_whiteImage.imageView, _defaultSamplerLinear);
+  texCache.set_fallback(defaultTextureId);
 }
 
 void VulkanEngine::cleanup() {
@@ -577,6 +619,10 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd) {
       .pNext = nullptr};
 
   uint32_t descriptorCounts = texCache.Cache.size();
+  if (_maxSampledImageDescriptors != 0) {
+    descriptorCounts =
+        std::min(descriptorCounts, _maxSampledImageDescriptors);
+  }
   allocArrayInfo.pDescriptorCounts = &descriptorCounts;
   allocArrayInfo.descriptorSetCount = 1;
 
@@ -589,10 +635,10 @@ void VulkanEngine::draw_geometry(VkCommandBuffer cmd) {
   writer.write_buffer(0, gpuSceneDataBuffer.buffer, sizeof(GPUSceneData), 0,
                       VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-  if (texCache.Cache.size() > 0) {
+  if (descriptorCounts > 0) {
     VkWriteDescriptorSet arraySet{.sType =
                                       VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    arraySet.descriptorCount = texCache.Cache.size();
+    arraySet.descriptorCount = descriptorCounts;
     arraySet.dstArrayElement = 0;
     arraySet.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     arraySet.dstBinding = 1;
@@ -779,9 +825,11 @@ void VulkanEngine::update_scene() {
   sceneData.proj = projection;
   sceneData.viewproj = projection * view;
 
-  // for (int i = 0; i < 16; i++)         {
-  loadedScenes["structure"]->Draw(glm::mat4{1.f}, drawCommands);
-  //}
+  for (auto &entry : loadedScenes) {
+    if (entry.second) {
+      entry.second->Draw(glm::mat4{1.f}, drawCommands);
+    }
+  }
 }
 
 AllocatedBuffer VulkanEngine::create_buffer(size_t allocSize,
@@ -1268,12 +1316,22 @@ void VulkanEngine::init_sync_structures() {
 }
 
 void VulkanEngine::init_renderables() {
-  std::string structurePath = {"../assets/structure.glb"};
-  auto structureFile = loadGltf(this, structurePath);
+//   const std::string structurePath = asset_path("structure.glb");
+//   auto structureFile = loadGltf(this, structurePath);
 
-  assert(structureFile.has_value());
+//   if (!structureFile.has_value()) {
+//     fmt::print("Failed to load default structure glTF at '{}'.\n", structurePath);
+//   } else {
+//     loadedScenes["structure"] = *structureFile;
+//   }
 
-  loadedScenes["structure"] = *structureFile;
+  const std::string valleyPath = asset_path("valley/valley_az_usa.obj");
+  auto valleyScene = loadAssimpScene(this, valleyPath);
+  if (valleyScene.has_value()) {
+    loadedScenes["valley"] = *valleyScene;
+  } else {
+    fmt::print("Warning: failed to load valley_az_usa.obj from '{}'.\n", valleyPath);
+  }
 }
 
 void VulkanEngine::init_imgui() {
@@ -1398,9 +1456,11 @@ void VulkanEngine::init_descriptors() {
     // it should be more this MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1 env var.
     // investigate why maxPerStageDescriptorSamplers is still low with that env
     // var set to true.
-    builder.bindings[1].descriptorCount = std::max(16u, maxSamplers);
+//   builder.bindings[1].descriptorCount = std::max(16u, maxSamplers);
+//   _maxSampledImageDescriptors = builder.bindings[1].descriptorCount;
+//   texCache.set_max(_maxSampledImageDescriptors);
 
-    // builder.bindings[1].descriptorCount = 1024;
+    builder.bindings[1].descriptorCount = 1024;
 
     bindFlags.bindingCount = 2;
     bindFlags.pBindingFlags = flagArray.data();
@@ -1598,12 +1658,37 @@ TextureID TextureCache::AddTexture(const VkImageView &image,
     }
   }
 
+  const bool limitActive =
+      maxDescriptors != std::numeric_limits<uint32_t>::max() &&
+      maxDescriptors > 0;
+
+  if (limitActive && Cache.size() >= maxDescriptors) {
+    if (!limitWarningEmitted) {
+      fmt::print(
+          "Texture cache reached capacity ({}). Reusing fallback texture {}.\n",
+          maxDescriptors, fallbackTexture.Index);
+      limitWarningEmitted = true;
+    }
+
+    if (!Cache.empty() && fallbackTexture.Index < Cache.size()) {
+      return fallbackTexture;
+    }
+
+    // Return last valid descriptor if no explicit fallback is available.
+    return TextureID{
+        Cache.empty() ? 0u : static_cast<uint32_t>(Cache.size() - 1)};
+  }
+
   uint32_t idx = Cache.size();
 
   Cache.push_back(VkDescriptorImageInfo{
       .sampler = sampler,
       .imageView = image,
       .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+
+  if (fallbackTexture.Index >= Cache.size()) {
+    fallbackTexture.Index = idx;
+  }
 
   return TextureID{idx};
 }

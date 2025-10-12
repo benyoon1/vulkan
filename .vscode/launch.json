@@ -11,7 +11,7 @@
       "program": "${workspaceFolder}/bin/engine",
       "args": [],
       "stopAtEntry": false,
-      "cwd": "${workspaceFolder}",
+      "cwd": "${workspaceFolder}/bin",
       "environment": [
         {
           "name": "MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS",

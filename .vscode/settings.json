@@ -1,3 +1,4 @@
 {
-  "clangd.arguments": ["--compile-commands-dir=bin"]
+  "clangd.arguments": ["--compile-commands-dir=bin"],
+  "editor.formatOnSave": false
 }

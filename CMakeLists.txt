@@ -10,6 +10,7 @@ project ("vulkan_guide")
 
   
 find_package(Vulkan REQUIRED)
+find_package(assimp CONFIG REQUIRED)
 
 add_subdirectory(third_party)
 if (TARGET SDL2)

@@ -1,5 +1,12 @@
 ﻿#include "stb_image.h"
+#include <assimp/Importer.hpp>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+#include <filesystem>
+#include <fmt/format.h>
+#include <fmt/printf.h>
 #include <iostream>
+#include <limits>
 #include <vk_loader.h>
 
 #include "vk_engine.h"
@@ -11,6 +18,317 @@
 #include <fastgltf/parser.hpp>
 #include <fastgltf/tools.hpp>
 #include <fastgltf/util.hpp>
+
+namespace
+{
+glm::mat4 ai_to_glm(const aiMatrix4x4& matrix)
+{
+    glm::mat4 result{1.0f};
+    result[0][0] = matrix.a1;
+    result[0][1] = matrix.a2;
+    result[0][2] = matrix.a3;
+    result[0][3] = matrix.a4;
+
+    result[1][0] = matrix.b1;
+    result[1][1] = matrix.b2;
+    result[1][2] = matrix.b3;
+    result[1][3] = matrix.b4;
+
+    result[2][0] = matrix.c1;
+    result[2][1] = matrix.c2;
+    result[2][2] = matrix.c3;
+    result[2][3] = matrix.c4;
+
+    result[3][0] = matrix.d1;
+    result[3][1] = matrix.d2;
+    result[3][2] = matrix.d3;
+    result[3][3] = matrix.d4;
+
+    return result;
+}
+
+std::optional<AllocatedImage> load_texture_from_disk(VulkanEngine* engine, const std::filesystem::path& texturePath)
+{
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+
+    stbi_uc* pixels = stbi_load(texturePath.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    if (!pixels)
+    {
+        fmt::print("Failed to load texture '{}': {}\n", texturePath.string(), stbi_failure_reason());
+        return std::nullopt;
+    }
+
+    VkExtent3D size{static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1};
+
+    AllocatedImage image = engine->create_image(pixels, size, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    stbi_image_free(pixels);
+
+    return image;
+}
+
+std::shared_ptr<Node> build_assimp_node(const aiNode* ainode, LoadedGLTF& file,
+                                        const std::vector<std::shared_ptr<MeshAsset>>& meshAssets,
+                                        size_t& unnamedCounter)
+{
+    auto node = std::make_shared<Node>();
+    node->localTransform = ai_to_glm(ainode->mTransformation);
+
+    std::string nodeName = ainode->mName.C_Str();
+    if (nodeName.empty())
+    {
+        nodeName = fmt::format("assimp_node_{}", unnamedCounter++);
+    }
+    file.nodes[nodeName] = node;
+
+    for (unsigned int meshIdx = 0; meshIdx < ainode->mNumMeshes; ++meshIdx)
+    {
+        uint32_t sceneMeshIndex = ainode->mMeshes[meshIdx];
+        if (sceneMeshIndex >= meshAssets.size())
+        {
+            continue;
+        }
+
+        auto meshPtr = meshAssets[sceneMeshIndex];
+        if (!meshPtr)
+        {
+            continue;
+        }
+
+        auto meshNode = std::make_shared<MeshNode>();
+        meshNode->mesh = meshPtr;
+        meshNode->localTransform = glm::mat4{1.0f};
+        meshNode->parent = node;
+
+        std::string meshNodeName = fmt::format("{}_mesh_{}", nodeName, meshIdx);
+        file.nodes[meshNodeName] = meshNode;
+
+        node->children.push_back(meshNode);
+    }
+
+    for (unsigned int childIdx = 0; childIdx < ainode->mNumChildren; ++childIdx)
+    {
+        auto childNode = build_assimp_node(ainode->mChildren[childIdx], file, meshAssets, unnamedCounter);
+        childNode->parent = node;
+        node->children.push_back(childNode);
+    }
+
+    return node;
+}
+} // namespace
+
+std::optional<std::shared_ptr<LoadedGLTF>> loadAssimpScene(VulkanEngine* engine, std::string_view filePath)
+{
+    fmt::print("Loading Assimp scene: {}\n", filePath);
+
+    Assimp::Importer importer;
+    const unsigned int importFlags = aiProcess_Triangulate | aiProcess_GenNormals | aiProcess_ImproveCacheLocality |
+                                     aiProcess_JoinIdenticalVertices | aiProcess_CalcTangentSpace |
+                                     aiProcess_GenBoundingBoxes | aiProcess_SortByPType | aiProcess_FlipUVs |
+                                     aiProcess_OptimizeMeshes | aiProcess_OptimizeGraph;
+    const aiScene* scene = importer.ReadFile(std::string(filePath), importFlags);
+
+    if (!scene || !scene->mRootNode || !scene->HasMeshes())
+    {
+        fmt::print("Failed to load scene '{}': {}\n", filePath, importer.GetErrorString());
+        return std::nullopt;
+    }
+
+    auto loaded = std::make_shared<LoadedGLTF>();
+    loaded->creator = engine;
+
+    const std::filesystem::path scenePath{filePath};
+    const std::filesystem::path sceneDirectory = scenePath.parent_path();
+
+    size_t materialCount = std::max<size_t>(scene->mNumMaterials, 1);
+
+    std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> poolSizes = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
+                                                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+    loaded->descriptorPool.init(engine->_device, static_cast<uint32_t>(materialCount), poolSizes);
+
+    loaded->materialDataBuffer =
+        engine->create_buffer(sizeof(GLTFMetallic_Roughness::MaterialConstants) * materialCount,
+                              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+    auto* materialConstants =
+        reinterpret_cast<GLTFMetallic_Roughness::MaterialConstants*>(loaded->materialDataBuffer.info.pMappedData);
+
+    std::vector<std::shared_ptr<GLTFMaterial>> materials;
+    materials.reserve(materialCount);
+
+    for (size_t i = 0; i < materialCount; ++i)
+    {
+        const aiMaterial* aiMat = (i < scene->mNumMaterials) ? scene->mMaterials[i] : nullptr;
+
+        auto mat = std::make_shared<GLTFMaterial>();
+        materials.push_back(mat);
+
+        std::string materialName =
+            aiMat && aiMat->GetName().length ? aiMat->GetName().C_Str() : fmt::format("assimp_mat_{}", i);
+        loaded->materials[materialName] = mat;
+
+        GLTFMetallic_Roughness::MaterialConstants constants{};
+        constants.colorFactors = glm::vec4(1.0f);
+        constants.metal_rough_factors = glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+
+        GLTFMetallic_Roughness::MaterialResources resources{};
+        resources.colorImage = engine->_whiteImage;
+        resources.colorSampler = engine->_defaultSamplerLinear;
+        resources.metalRoughImage = engine->_whiteImage;
+        resources.metalRoughSampler = engine->_defaultSamplerLinear;
+        resources.dataBuffer = loaded->materialDataBuffer.buffer;
+        resources.dataBufferOffset = static_cast<uint32_t>(i * sizeof(GLTFMetallic_Roughness::MaterialConstants));
+
+        if (aiMat)
+        {
+            aiColor4D diffuse{};
+            if (AI_SUCCESS == aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, diffuse))
+            {
+                constants.colorFactors = glm::vec4(diffuse.r, diffuse.g, diffuse.b, diffuse.a);
+            }
+
+            aiString texPath;
+            if (AI_SUCCESS == aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath))
+            {
+                std::filesystem::path resolved = sceneDirectory / texPath.C_Str();
+                resolved = resolved.lexically_normal();
+
+                auto it = loaded->images.find(resolved.string());
+                if (it == loaded->images.end())
+                {
+                    auto img = load_texture_from_disk(engine, resolved);
+                    if (img.has_value())
+                    {
+                        it = loaded->images.emplace(resolved.string(), *img).first;
+                    }
+                    else
+                    {
+                        fmt::print("Warning: failed to load texture '{}'. Using fallback.\n", resolved.string());
+                    }
+                }
+
+                if (it != loaded->images.end())
+                {
+                    resources.colorImage = it->second;
+                }
+            }
+        }
+
+        constants.colorTexID =
+            engine->texCache.AddTexture(resources.colorImage.imageView, resources.colorSampler).Index;
+        constants.metalRoughTexID =
+            engine->texCache.AddTexture(resources.metalRoughImage.imageView, resources.metalRoughSampler).Index;
+
+        materialConstants[i] = constants;
+        mat->data = engine->metalRoughMaterial.write_material(engine->_device, MaterialPass::MainColor, resources,
+                                                              loaded->descriptorPool);
+    }
+
+    std::vector<std::shared_ptr<MeshAsset>> meshAssets(scene->mNumMeshes);
+
+    for (unsigned int meshIdx = 0; meshIdx < scene->mNumMeshes; ++meshIdx)
+    {
+        const aiMesh* mesh = scene->mMeshes[meshIdx];
+        if (!mesh)
+        {
+            continue;
+        }
+
+        auto asset = std::make_shared<MeshAsset>();
+        asset->name = mesh->mName.length ? mesh->mName.C_Str() : fmt::format("assimp_mesh_{}", meshIdx);
+
+        std::vector<Vertex> vertices(mesh->mNumVertices);
+        glm::vec3 minPos(std::numeric_limits<float>::max());
+        glm::vec3 maxPos(-std::numeric_limits<float>::max());
+
+        for (unsigned int v = 0; v < mesh->mNumVertices; ++v)
+        {
+            Vertex vertex{};
+            const aiVector3D& pos = mesh->mVertices[v];
+            vertex.position = glm::vec3(pos.x, pos.y, pos.z);
+            vertex.normal = mesh->HasNormals()
+                                ? glm::vec3(mesh->mNormals[v].x, mesh->mNormals[v].y, mesh->mNormals[v].z)
+                                : glm::vec3(0.0f, 1.0f, 0.0f);
+
+            if (mesh->HasTextureCoords(0))
+            {
+                vertex.uv_x = mesh->mTextureCoords[0][v].x;
+                vertex.uv_y = mesh->mTextureCoords[0][v].y;
+            }
+            else
+            {
+                vertex.uv_x = 0.0f;
+                vertex.uv_y = 0.0f;
+            }
+
+            if (mesh->HasVertexColors(0))
+            {
+                const aiColor4D& c = mesh->mColors[0][v];
+                vertex.color = glm::vec4(c.r, c.g, c.b, c.a);
+            }
+            else
+            {
+                vertex.color = glm::vec4(1.0f);
+            }
+
+            minPos = glm::min(minPos, vertex.position);
+            maxPos = glm::max(maxPos, vertex.position);
+
+            vertices[v] = vertex;
+        }
+
+        std::vector<uint32_t> indices;
+        indices.reserve(mesh->mNumFaces * 3);
+        for (unsigned int f = 0; f < mesh->mNumFaces; ++f)
+        {
+            const aiFace& face = mesh->mFaces[f];
+            if (face.mNumIndices != 3)
+            {
+                continue;
+            }
+            indices.push_back(face.mIndices[0]);
+            indices.push_back(face.mIndices[1]);
+            indices.push_back(face.mIndices[2]);
+        }
+
+        if (vertices.empty() || indices.empty())
+        {
+            fmt::print("Warning: mesh '{}' has no triangles after processing. Skipping.\n", asset->name);
+            continue;
+        }
+
+        GeoSurface surface{};
+        surface.startIndex = 0;
+        surface.count = static_cast<uint32_t>(indices.size());
+        surface.bounds.origin = (maxPos + minPos) * 0.5f;
+        surface.bounds.extents = (maxPos - minPos) * 0.5f;
+        surface.bounds.sphereRadius = glm::length(surface.bounds.extents);
+
+        if (!materials.empty())
+        {
+            uint32_t matIndex = std::min<uint32_t>(mesh->mMaterialIndex, static_cast<uint32_t>(materials.size() - 1));
+            surface.material = materials[matIndex];
+        }
+
+        asset->surfaces.push_back(surface);
+        asset->meshBuffers = engine->uploadMesh(indices, vertices);
+
+        loaded->meshes[asset->name] = asset;
+        meshAssets[meshIdx] = asset;
+    }
+
+    if (scene->mRootNode)
+    {
+        size_t unnamedCounter = 0;
+        auto root = build_assimp_node(scene->mRootNode, *loaded, meshAssets, unnamedCounter);
+        loaded->topNodes.push_back(root);
+        root->refreshTransform(glm::mat4{1.0f});
+    }
+
+    return loaded;
+}
 
 std::optional<AllocatedImage> load_image(VulkanEngine* engine, fastgltf::Asset& asset, fastgltf::Image& image)
 {
@@ -141,7 +459,7 @@ VkSamplerMipmapMode extract_mipmap_mode(fastgltf::Filter filter)
 
 std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::string_view filePath)
 {
-    fmt::print("Loading GLTF: {}", filePath);
+    fmt::print("Loading GLTF: {}\n", filePath);
 
     std::shared_ptr<LoadedGLTF> scene = std::make_shared<LoadedGLTF>();
     scene->creator = engine;
@@ -154,11 +472,15 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VulkanEngine* engine, std::s
     // fastgltf::Options::LoadExternalImages;
 
     fastgltf::GltfDataBuffer data;
-    data.loadFromFile(filePath);
-
-    fastgltf::Asset gltf;
 
     std::filesystem::path path = filePath;
+    if (!data.loadFromFile(path))
+    {
+        fmt::print("Failed to open glTF file '{}'.\n", path.string());
+        return {};
+    }
+
+    fastgltf::Asset gltf;
 
     auto type = fastgltf::determineGltfFileType(&data);
     if (type == fastgltf::GltfType::glTF)
