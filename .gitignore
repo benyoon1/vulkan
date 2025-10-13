@@ -6,3 +6,4 @@
 log.txt
 *.spv
 .DS_Store
+imgui.ini
